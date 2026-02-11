@@ -2,8 +2,13 @@
 Async PostgreSQL database layer using asyncpg.
 Handles connection pool, table creation, and all queries.
 """
+import asyncio
 import asyncpg
 import logging
+import os
+import ssl
+from urllib.parse import parse_qs, urlparse
+
 from config import (
     DATABASE_URL, DEFAULT_REFERRAL_REWARD, DEFAULT_L2_REFERRAL_REWARD,
     DEFAULT_DAILY_REWARD, DEFAULT_STREAK_BONUS, DEFAULT_MILESTONE_BONUS,
@@ -17,15 +22,59 @@ class Database:
     def __init__(self):
         self.pool: asyncpg.Pool | None = None
 
-    async def connect(self):
-        self.pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=1,
-            max_size=5,
-            command_timeout=30,
-            max_inactive_connection_lifetime=60,
-        )
-        logger.info("Database pool created")
+    @staticmethod
+    def _should_use_ssl(dsn: str) -> bool:
+        """Enable SSL when DB URL explicitly asks for it, or via env override.
+
+        Railway/managed DBs often use ?sslmode=require in DATABASE_URL.
+        """
+        try:
+            q = parse_qs(urlparse(dsn).query)
+            sslmode = (q.get("sslmode") or [None])[0]
+            if sslmode and str(sslmode).lower() in ("require", "verify-ca", "verify-full"):
+                return True
+        except Exception:
+            pass
+
+        return os.getenv("DATABASE_SSL", "").lower() in ("1", "true", "yes")
+
+    async def connect(self, retries: int = 6):
+        use_ssl = self._should_use_ssl(DATABASE_URL)
+        ssl_ctx = ssl.create_default_context() if use_ssl else None
+
+        last_err: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                self.pool = await asyncpg.create_pool(
+                    DATABASE_URL,
+                    min_size=1,
+                    max_size=5,
+                    command_timeout=30,
+                    max_inactive_connection_lifetime=60,
+                    ssl=ssl_ctx,
+                )
+                logger.info("Database pool created")
+                return
+            except Exception as e:
+                last_err = e
+
+                # Fail fast on auth/config errors (retry won't help)
+                msg = str(e).lower()
+                if "password authentication failed" in msg or "invalid authorization" in msg:
+                    raise
+
+                wait_s = min(2 ** attempt, 20)
+                logger.warning(
+                    "DB connect failed (attempt %s/%s): %r — retrying in %ss",
+                    attempt,
+                    retries,
+                    e,
+                    wait_s,
+                )
+                await asyncio.sleep(wait_s)
+
+        logger.error("DB connect failed after %s attempts: %r", retries, last_err)
+        raise last_err  # type: ignore[misc]
 
     async def ensure_pool(self):
         """Reconnect if pool is dead."""
@@ -33,6 +82,9 @@ class Database:
             logger.warning("Pool lost, reconnecting...")
             await self.connect()
 
+    async def close(self):
+        if self.pool:
+            await self.pool.close()
 
     # ─── TABLE CREATION ────────────────────────────────────────────
 
