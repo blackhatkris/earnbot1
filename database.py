@@ -17,9 +17,11 @@ class Database:
     def __init__(self):
         self.pool: asyncpg.Pool | None = None
 
-      async def connect(self):
+    async def connect(self):
         self.pool = await asyncpg.create_pool(
-            DATABASE_URL, min_size=1, max_size=5,
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
             command_timeout=30,
             max_inactive_connection_lifetime=60,
         )
@@ -30,7 +32,7 @@ class Database:
         if self.pool is None or self.pool._closed:
             logger.warning("Pool lost, reconnecting...")
             await self.connect()
-close()
+
 
     # ─── TABLE CREATION ────────────────────────────────────────────
 
