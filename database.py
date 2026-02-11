@@ -17,16 +17,20 @@ class Database:
     def __init__(self):
         self.pool: asyncpg.Pool | None = None
 
-    async def connect(self):
+      async def connect(self):
         self.pool = await asyncpg.create_pool(
             DATABASE_URL, min_size=1, max_size=5,
             command_timeout=30,
+            max_inactive_connection_lifetime=60,
         )
         logger.info("Database pool created")
 
-    async def close(self):
-        if self.pool:
-            await self.pool.close()
+    async def ensure_pool(self):
+        """Reconnect if pool is dead."""
+        if self.pool is None or self.pool._closed:
+            logger.warning("Pool lost, reconnecting...")
+            await self.connect()
+close()
 
     # ─── TABLE CREATION ────────────────────────────────────────────
 
