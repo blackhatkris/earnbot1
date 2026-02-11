@@ -28,12 +28,13 @@ class AuthMiddleware(BaseMiddleware):
         # Ensure DB connection is alive
         await self.db.ensure_pool()
 
-        # Register if new
+        # Register if new — but skip for /start so referral logic works
         db_user = await self.db.get_user(user.id)
-        if not db_user:
+        is_start = isinstance(event, Message) and event.text and event.text.startswith("/start")
+        if not db_user and not is_start:
             await self.db.add_user(user.id, user.username or "", user.full_name or "")
+            db_user = await self.db.get_user(user.id)
 
-        db_user = await self.db.get_user(user.id)
 
         # Check ban
         if db_user and db_user["is_banned"]:
@@ -81,7 +82,16 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user:
             return
 
+        # Fast path: if user already verified once, don't call Telegram API on every message.
+        db_user = data.get("db_user")
+        try:
+            if db_user and bool(db_user["joined_channels"]):
+                return await handler(event, data)
+        except Exception:
+            pass
+
         channels = await self.db.get_active_channels()
+
         if not channels:
             return await handler(event, data)
 
