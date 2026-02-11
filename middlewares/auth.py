@@ -23,10 +23,14 @@ class AuthMiddleware(BaseMiddleware):
         if not user:
             return
 
-        data["db"] = self.db
+                data["db"] = self.db
+
+        # Ensure DB connection is alive
+        await self.db.ensure_pool()
 
         # Register if new
         db_user = await self.db.get_user(user.id)
+
         if not db_user:
             await self.db.add_user(user.id, user.username or "", user.full_name or "")
 
