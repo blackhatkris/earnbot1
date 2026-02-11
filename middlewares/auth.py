@@ -35,16 +35,16 @@ class AuthMiddleware(BaseMiddleware):
             await self.db.add_user(user.id, user.username or "", user.full_name or "")
             db_user = await self.db.get_user(user.id)
 
-
         # Check ban
         if db_user and db_user["is_banned"]:
             if isinstance(event, Message):
                 await event.answer("🚫 You are banned from using this bot.")
             return
 
-        # Check maintenance
+        # Check maintenance — exempt super admins
+        from config import SUPER_ADMINS
         maint = await self.db.get_setting("maintenance_mode")
-        if maint == "1":
+        if maint == "1" and user.id not in SUPER_ADMINS:
             if isinstance(event, Message):
                 await event.answer("🔧 Bot is under maintenance. Please try again later.")
             return
