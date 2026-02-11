@@ -46,33 +46,37 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    dp = Dispatcher()
-    dp["db"] = db
+    try:
+        dp = Dispatcher()
+        dp["db"] = db
 
-    # Middlewares
-    dp.message.middleware(AuthMiddleware(db))
-    dp.callback_query.middleware(AuthMiddleware(db))
-    dp.message.middleware(ForceJoinMiddleware(db, bot))
-    dp.callback_query.middleware(ForceJoinMiddleware(db, bot))
+        # Middlewares
+        dp.message.middleware(AuthMiddleware(db))
+        dp.callback_query.middleware(AuthMiddleware(db))
+        dp.message.middleware(ForceJoinMiddleware(db, bot))
+        dp.callback_query.middleware(ForceJoinMiddleware(db, bot))
 
-    # Register routers
-    dp.include_routers(
-        admin.router,
-        moderator.router,
-        user.router,
-        referral.router,
-        daily.router,
-        withdraw.router,
-        leaderboard.router,
-        help_handler.router,
-        forcejoin.router,
-    )
+        # Register routers
+        dp.include_routers(
+            admin.router,
+            moderator.router,
+            user.router,
+            referral.router,
+            daily.router,
+            withdraw.router,
+            leaderboard.router,
+            help_handler.router,
+            forcejoin.router,
+        )
 
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
+        dp.startup.register(on_startup)
+        dp.shutdown.register(on_shutdown)
 
-    logger.info("Starting polling...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        logger.info("Starting polling...")
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        # Prevent "Unclosed client session" if startup crashes
+        await bot.session.close()
 
 
 if __name__ == "__main__":
