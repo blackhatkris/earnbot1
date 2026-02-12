@@ -41,14 +41,20 @@ async def admin_panel(message: Message, db: Database):
 async def add_mod_prompt(message: Message, db: Database):
     if not is_super_admin(message.from_user.id):
         return
-    await message.answer("Send the <b>user ID</b> to add as moderator:")
+    await message.answer(
+        "Send in this format:\n<code>addmod USER_ID</code>\n\n"
+        "Example: <code>addmod 123456789</code>"
+    )
 
 
 @router.message(F.text == "➖ Remove Moderator")
 async def remove_mod_prompt(message: Message, db: Database):
     if not is_super_admin(message.from_user.id):
         return
-    await message.answer("Send the <b>user ID</b> to remove from moderators:")
+    await message.answer(
+        "Send in this format:\n<code>removemod USER_ID</code>\n\n"
+        "Example: <code>removemod 123456789</code>"
+    )
 
 
 @router.message(F.text == "📢 Add Channel")
@@ -65,7 +71,10 @@ async def add_channel_prompt(message: Message):
 async def remove_channel_prompt(message: Message):
     if not is_super_admin(message.from_user.id):
         return
-    await message.answer("Send the <b>channel ID</b> to remove:")
+    await message.answer(
+        "Send in this format:\n<code>rmchannel CHANNEL_ID</code>\n\n"
+        "Example: <code>rmchannel -1001234567890</code>"
+    )
 
 
 @router.message(F.text == "⚙️ Change Rewards")
@@ -112,14 +121,20 @@ async def ban_prompt(message: Message, db: Database):
     uid = message.from_user.id
     if not is_super_admin(uid) and not await db.is_moderator(uid):
         return
-    await message.answer("Send the <b>user ID</b> to ban:")
+    await message.answer(
+        "Send in this format:\n<code>ban USER_ID</code>\n\n"
+        "Example: <code>ban 123456789</code>"
+    )
 
 
 @router.message(F.text == "🔓 Unban User")
 async def unban_prompt(message: Message):
     if not is_super_admin(message.from_user.id):
         return
-    await message.answer("Send the <b>user ID</b> to unban:")
+    await message.answer(
+        "Send in this format:\n<code>unban USER_ID</code>\n\n"
+        "Example: <code>unban 123456789</code>"
+    )
 
 
 @router.message(F.text == "📊 Full Stats")
@@ -293,3 +308,72 @@ async def remove_channel(message: Message, db: Database):
     ch_id = message.text.split(maxsplit=1)[1].strip()
     await db.remove_channel(ch_id)
     await message.answer(f"✅ Channel {ch_id} removed.")
+
+
+@router.message(Command("backfill"))
+async def backfill_referrals(message: Message, db: Database):
+    """One-time command to credit missed referral rewards for existing users."""
+    if not is_super_admin(message.from_user.id):
+        return
+
+    await message.answer("⏳ Backfilling missed referral rewards... please wait.")
+
+    reward = float(await db.get_setting("referral_reward") or 15)
+    l2_reward = float(await db.get_setting("l2_referral_reward") or 1)
+    milestone_bonus = float(await db.get_setting("milestone_bonus") or 50)
+
+    # Find users who have referred_by set but no referral record exists
+    rows = await db.pool.fetch("""
+        SELECT u.user_id, u.full_name, u.referred_by
+        FROM users u
+        WHERE u.referred_by IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM referrals r
+              WHERE r.referrer_id = u.referred_by AND r.referred_id = u.user_id
+          )
+    """)
+
+    credited = 0
+    for row in rows:
+        referred_id = row["user_id"]
+        referrer_id = row["referred_by"]
+        referred_name = row["full_name"] or "User"
+
+        # Skip self-referral
+        if referrer_id == referred_id:
+            continue
+
+        # Check referrer exists
+        referrer = await db.get_user(referrer_id)
+        if not referrer:
+            continue
+
+        # L1 reward
+        existing = await db.get_referral(referrer_id, referred_id)
+        if not existing:
+            await db.add_referral(referrer_id, referred_id, level=1, reward=reward)
+            await db.update_balance(referrer_id, reward)
+            await db.increment_referral_count(referrer_id)
+            await db.add_log(referrer_id, "backfill_l1", f"referred={referred_id}, reward=₹{reward}")
+            credited += 1
+
+            # Milestone check
+            ref_count = await db.get_referral_count(referrer_id)
+            if ref_count > 0 and ref_count % 10 == 0:
+                await db.update_balance(referrer_id, milestone_bonus)
+                await db.add_log(referrer_id, "backfill_milestone", f"₹{milestone_bonus} at {ref_count} refs")
+
+            # L2 reward
+            l2_referrer_id = await db.get_referrer(referrer_id)
+            if l2_referrer_id and l2_referrer_id != referred_id:
+                existing_l2 = await db.get_referral(l2_referrer_id, referred_id)
+                if not existing_l2:
+                    await db.add_referral(l2_referrer_id, referred_id, level=2, reward=l2_reward)
+                    await db.update_balance(l2_referrer_id, l2_reward)
+                    await db.add_log(l2_referrer_id, "backfill_l2", f"referred={referred_id}, reward=₹{l2_reward}")
+
+    await message.answer(
+        f"✅ <b>Backfill complete!</b>\n\n"
+        f"📊 <b>{credited}</b> missed referrals credited.\n"
+        f"💰 ₹{reward} per referral given."
+    )
