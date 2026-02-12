@@ -28,24 +28,19 @@ class AuthMiddleware(BaseMiddleware):
 
         data["db"] = self.db
 
-        # Ensure DB connection is alive
         await self.db.ensure_pool()
 
-        # Register if new — but skip for /start so referral logic works
         db_user = await self.db.get_user(user.id)
         is_start = isinstance(event, Message) and event.text and event.text.startswith("/start")
         if not db_user and not is_start:
             await self.db.add_user(user.id, user.username or "", user.full_name or "")
             db_user = await self.db.get_user(user.id)
 
-
-        # Check ban
         if db_user and db_user["is_banned"]:
             if isinstance(event, Message):
                 await event.answer("🚫 You are banned from using this bot.")
             return
 
-        # Check maintenance — exempt super admins
         from config import SUPER_ADMINS
         maint = await self.db.get_setting("maintenance_mode")
         if maint == "1" and user.id not in SUPER_ADMINS:
@@ -72,13 +67,11 @@ class ForceJoinMiddleware(BaseMiddleware):
         event: Message | CallbackQuery,
         data: Dict[str, Any],
     ):
-        # Let /start and /help through always
         if isinstance(event, Message) and event.text:
             cmd = event.text.split()[0].split("@")[0]
             if cmd in self.EXEMPT_COMMANDS:
                 return await handler(event, data)
 
-        # Let callback "check_joined" through
         if isinstance(event, CallbackQuery) and event.data == "check_joined":
             return await handler(event, data)
 
@@ -86,8 +79,6 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user:
             return
 
-        # Fast path: if user already verified once, don't call Telegram API on every message.
-        # BUT reset joined_channels when new channels are added (compare count)
         db_user = data.get("db_user")
 
         channels = await self.db.get_active_channels()
@@ -95,8 +86,14 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not channels:
             return await handler(event, data)
 
-        # If user already verified AND channel count hasn't changed, skip API calls
-        # We remove the fast path so it ALWAYS checks — this ensures new channels are enforced
+        # If user already verified, skip API calls
+        if db_user:
+            try:
+                if bool(db_user.get("joined_channels")):
+                    return await handler(event, data)
+            except Exception:
+                pass
+
         not_joined = []
         for ch in channels:
             try:
@@ -112,11 +109,9 @@ class ForceJoinMiddleware(BaseMiddleware):
                     "Force-join API error: user=%s channel=%s error=%r",
                     user.id, ch["channel_id"], e,
                 )
-                # If we can't check, treat as not joined to be safe
                 not_joined.append(ch)
 
         if not_joined:
-            # Reset joined flag
             await self.db.set_joined_channels(user.id, False)
             from keyboards.user_menu import force_join_keyboard
             kb = await force_join_keyboard(self.db)
@@ -130,6 +125,5 @@ class ForceJoinMiddleware(BaseMiddleware):
                 await event.answer("Join all channels first!", show_alert=True)
             return
 
-        # All channels joined — mark in DB
         await self.db.set_joined_channels(user.id, True)
         return await handler(event, data)
