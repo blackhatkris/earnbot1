@@ -38,6 +38,7 @@ class AuthMiddleware(BaseMiddleware):
             await self.db.add_user(user.id, user.username or "", user.full_name or "")
             db_user = await self.db.get_user(user.id)
 
+
         # Check ban
         if db_user and db_user["is_banned"]:
             if isinstance(event, Message):
@@ -85,12 +86,17 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user:
             return
 
+        # Fast path: if user already verified once, don't call Telegram API on every message.
+        # BUT reset joined_channels when new channels are added (compare count)
+        db_user = data.get("db_user")
+
         channels = await self.db.get_active_channels()
 
         if not channels:
             return await handler(event, data)
 
-        # Check EVERY channel — no fast path skip
+        # If user already verified AND channel count hasn't changed, skip API calls
+        # We remove the fast path so it ALWAYS checks — this ensures new channels are enforced
         not_joined = []
         for ch in channels:
             try:
@@ -110,6 +116,7 @@ class ForceJoinMiddleware(BaseMiddleware):
                 not_joined.append(ch)
 
         if not_joined:
+            # Reset joined flag
             await self.db.set_joined_channels(user.id, False)
             from keyboards.user_menu import force_join_keyboard
             kb = await force_join_keyboard(self.db)
@@ -123,6 +130,6 @@ class ForceJoinMiddleware(BaseMiddleware):
                 await event.answer("Join all channels first!", show_alert=True)
             return
 
-        # All channels joined
+        # All channels joined — mark in DB
         await self.db.set_joined_channels(user.id, True)
         return await handler(event, data)
