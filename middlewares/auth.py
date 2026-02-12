@@ -3,10 +3,13 @@ Middlewares:
 1. AuthMiddleware — registers user on first interaction, blocks banned users.
 2. ForceJoinMiddleware — blocks usage until user has joined all required channels.
 """
+import logging
 from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware, Bot
 from aiogram.types import Message, CallbackQuery, Update
 from database import Database
+
+logger = logging.getLogger(__name__)
 
 
 class AuthMiddleware(BaseMiddleware):
@@ -82,36 +85,44 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user:
             return
 
-        # Fast path: if user already verified once, don't call Telegram API on every message.
-        db_user = data.get("db_user")
-        try:
-            if db_user and bool(db_user["joined_channels"]):
-                return await handler(event, data)
-        except Exception:
-            pass
-
         channels = await self.db.get_active_channels()
 
         if not channels:
             return await handler(event, data)
 
+        # Check EVERY channel — no fast path skip
+        not_joined = []
         for ch in channels:
             try:
                 member = await self.bot.get_chat_member(int(ch["channel_id"]), user.id)
+                logger.info(
+                    "Force-join check: user=%s channel=%s status=%s",
+                    user.id, ch["channel_id"], member.status,
+                )
                 if member.status in ("left", "kicked"):
-                    # Not joined — block
-                    from keyboards.user_menu import force_join_keyboard
-                    kb = await force_join_keyboard(self.db)
-                    if isinstance(event, Message):
-                        await event.answer(
-                            "⚠️ <b>You must join all our channels to use this bot!</b>\n\n"
-                            "Join below and tap <b>✅ I Have Joined</b>.",
-                            reply_markup=kb,
-                        )
-                    elif isinstance(event, CallbackQuery):
-                        await event.answer("Join all channels first!", show_alert=True)
-                    return
-            except Exception:
-                pass  # Bot not admin in channel or channel issue — skip
+                    not_joined.append(ch)
+            except Exception as e:
+                logger.error(
+                    "Force-join API error: user=%s channel=%s error=%r",
+                    user.id, ch["channel_id"], e,
+                )
+                # If we can't check, treat as not joined to be safe
+                not_joined.append(ch)
 
+        if not_joined:
+            await self.db.set_joined_channels(user.id, False)
+            from keyboards.user_menu import force_join_keyboard
+            kb = await force_join_keyboard(self.db)
+            if isinstance(event, Message):
+                await event.answer(
+                    "⚠️ <b>You must join all our channels to use this bot!</b>\n\n"
+                    "Join below and tap <b>✅ I Have Joined</b>.",
+                    reply_markup=kb,
+                )
+            elif isinstance(event, CallbackQuery):
+                await event.answer("Join all channels first!", show_alert=True)
+            return
+
+        # All channels joined
+        await self.db.set_joined_channels(user.id, True)
         return await handler(event, data)
